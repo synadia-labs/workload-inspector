@@ -21,7 +21,6 @@ func TestDoRun(t *testing.T) {
 			want: &RunCommandResponse{
 				Stdout: "hello\n",
 			},
-			err: nil,
 		},
 		{
 			name: "pipe",
@@ -29,7 +28,6 @@ func TestDoRun(t *testing.T) {
 			want: &RunCommandResponse{
 				Stdout: "       1\n",
 			},
-			err: nil,
 		},
 		{
 			name: "pipe twice",
@@ -37,7 +35,6 @@ func TestDoRun(t *testing.T) {
 			want: &RunCommandResponse{
 				Stdout: "1\n",
 			},
-			err: nil,
 		},
 		// bad
 		{

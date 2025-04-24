@@ -1,5 +1,7 @@
 services:
   inspector:
     image: workload-inspector:latest
+    environment:
+      - container=true
     env_file:
       - .env

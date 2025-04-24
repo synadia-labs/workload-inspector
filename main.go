@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
+	"text/template"
 
 	"github.com/google/shlex"
 	"github.com/nats-io/nats.go"
@@ -24,6 +26,20 @@ const (
 	Prefix = "INSP"
 )
 
+const credsTempl = `-----BEGIN NATS USER JWT-----
+{{.Jwt}}
+------END NATS USER JWT------
+
+************************* IMPORTANT *************************
+NKEY Seed printed below can be used to sign and prove identity.
+NKEYs are sensitive and should be treated as secrets.
+
+-----BEGIN USER NKEY SEED-----
+{{.Nkey}}
+------END USER NKEY SEED------
+
+*************************************************************`
+
 func main() {
 	// pre-flight checks
 	natsUrl := os.Getenv("NEX_WORKLOAD_NATS_URL")
@@ -31,8 +47,8 @@ func main() {
 		log.Fatalf("missing NEX_WORKLOAD_NATS_URL")
 	}
 
-	natsNkey := os.Getenv("NEX_WORKLOAD_NATS_NKEY")
-	if natsUrl == "" {
+	natsNkey := strings.TrimSpace(os.Getenv("NEX_WORKLOAD_NATS_NKEY"))
+	if natsNkey == "" {
 		log.Fatalf("missing NEX_WORKLOAD_NATS_NKEY")
 	}
 
@@ -45,7 +61,37 @@ func main() {
 	if err != nil {
 		log.Fatalf("NEX_WORKLOAD_NATS_B64_JWT is invalid base64: %s", err)
 	}
-	natsJwt := string(natsJwtBytes)
+	natsJwt := strings.TrimSpace(string(natsJwtBytes))
+
+	// save user creds to file if inside a container
+	if os.Getenv("container") != "" {
+		tmpl, err := template.New("creds").Parse(credsTempl)
+		if err != nil {
+			log.Fatalf("error parsing creds template: %s", err)
+		}
+
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("error getting user home directory: %s", err)
+		}
+
+		file, err := os.Create(filepath.Join(home, "creds.txt"))
+		if err != nil {
+			log.Fatalf("error creating nats creds file: %s", err)
+		}
+
+		{
+			defer file.Close()
+			err = tmpl.Execute(file, map[string]string{
+				"Jwt":  natsJwt,
+				"Nkey": natsNkey,
+			})
+			if err != nil {
+				log.Fatalf("error writing nats creds file: %s", err)
+			}
+			log.Printf("nats creds file written to %s\n", file.Name())
+		}
+	}
 
 	// connect to nats
 	nc, err := nats.Connect(natsUrl, nats.UserJWTAndSeed(natsJwt, natsNkey), nats.Name(Name))
@@ -101,9 +147,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Printf("%s started\n", Name)
+	log.Printf("%s started\n", Name)
 	<-ctx.Done()
-	fmt.Printf("%s stopped", Name)
+	log.Printf("%s stopped", Name)
 }
 
 func microLogHandler(fn func(r micro.Request)) micro.Handler {
@@ -165,7 +211,11 @@ func runCommand(r micro.Request) {
 	response, err := parseAndRun(req.Command)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "run error: %s\n", err)
-		r.Error("100", err.Error(), nil)
+		var data []byte
+		if response != nil {
+			data, _ = json.Marshal(response)
+		}
+		r.Error("100", err.Error(), data)
 		return
 	}
 
@@ -202,12 +252,7 @@ func parseAndRun(command string) (*RunCommandResponse, error) {
 		}
 	}
 
-	response, err := pipeCommands(commands)
-	if err != nil {
-		return nil, err
-	}
-
-	return response, nil
+	return pipeCommands(commands)
 }
 
 // Run a series of piped commands
@@ -251,16 +296,37 @@ func pipeCommands(commands []*exec.Cmd) (*RunCommandResponse, error) {
 		if i > 0 {
 			err := readers[i-1].Close()
 			if err != nil {
-				return nil, fmt.Errorf("error closing reader: %s", err)
+				stderr := stderrBuf.String()
+				fmt.Fprintf(os.Stderr, "%s\n", stderr)
+				return &RunCommandResponse{
+					Stdout: stdoutBuf.String(),
+					Stderr: stderr,
+					Code:   cmd.ProcessState.ExitCode(),
+					Error:  err.Error(),
+				}, fmt.Errorf("error closing reader: %s", err)
 			}
 			err = writers[i-1].Close()
 			if err != nil {
-				return nil, fmt.Errorf("error closing writer: %s", err)
+				stderr := stderrBuf.String()
+				fmt.Fprintf(os.Stderr, "%s\n", stderr)
+				return &RunCommandResponse{
+					Stdout: stdoutBuf.String(),
+					Stderr: stderr,
+					Code:   cmd.ProcessState.ExitCode(),
+					Error:  err.Error(),
+				}, fmt.Errorf("error closing writer: %s", err)
 			}
 		}
 		err := cmd.Wait()
 		if err != nil {
-			return nil, fmt.Errorf("error waiting for command \"%s\": %s", strings.Join(cmd.Args, " "), err)
+			stderr := stderrBuf.String()
+			fmt.Fprintf(os.Stderr, "%s\n", stderr)
+			return &RunCommandResponse{
+				Stdout: stdoutBuf.String(),
+				Stderr: stderr,
+				Code:   cmd.ProcessState.ExitCode(),
+				Error:  err.Error(),
+			}, fmt.Errorf("error running command \"%s\": %s", strings.Join(cmd.Args, " "), err)
 		}
 	}
 
