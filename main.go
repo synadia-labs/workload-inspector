@@ -93,7 +93,9 @@ func main() {
 		"RUN",
 		microLogHandler(runCommand),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.RUN", Prefix)),
-		micro.WithEndpointMetadata(map[string]string{"request": `{"command": "string"}`}),
+		micro.WithEndpointMetadata(map[string]string{
+			"request": `{"command": "string"}`,
+		}),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
