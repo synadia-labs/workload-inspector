@@ -1,0 +1,5 @@
+services:
+  inspector:
+    image: workload-inspector:latest
+    env_file:
+      - .env

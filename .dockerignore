@@ -1,0 +1,6 @@
+.git
+.vscode
+target
+.env
+.envrc
+Makefile
