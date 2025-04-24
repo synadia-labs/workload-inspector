@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 
+	"github.com/google/shlex"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 )
@@ -62,7 +67,7 @@ func main() {
 
 	err = svc.AddEndpoint(
 		"PING",
-		micro.HandlerFunc(ping),
+		microLogHandler(ping),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.PING", Prefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": "",
@@ -74,7 +79,7 @@ func main() {
 
 	err = svc.AddEndpoint(
 		"ENV",
-		micro.HandlerFunc(getEnvironment),
+		microLogHandler(getEnvironment),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.ENV", Prefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": "",
@@ -84,12 +89,26 @@ func main() {
 		log.Fatalf("error adding ENV endpoint: %s", err)
 	}
 
+	err = svc.AddEndpoint(
+		"RUN",
+		microLogHandler(runCommand),
+		micro.WithEndpointSubject(fmt.Sprintf("%s.RUN", Prefix)),
+		micro.WithEndpointMetadata(map[string]string{"request": `{"command": "string"}`}),
+	)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	fmt.Printf("%s started\n", Name)
 	<-ctx.Done()
 	fmt.Printf("%s stopped", Name)
+}
+
+func microLogHandler(fn func(r micro.Request)) micro.Handler {
+	return micro.HandlerFunc(func(r micro.Request) {
+		log.Printf("%s received request\n", r.Subject())
+		fn(r)
+	})
 }
 
 func ping(r micro.Request) {
@@ -111,4 +130,141 @@ func getEnvironment(r micro.Request) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "environment response error: %s\n", err)
 	}
+}
+
+type RunCommandRequest struct {
+	Command string `json:"command"`
+}
+
+type RunCommandResponse struct {
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
+	Code   int    `json:"code"`
+	Error  string `json:"error,omitempty"`
+}
+
+func runCommand(r micro.Request) {
+	var req RunCommandRequest
+	err := json.Unmarshal(r.Data(), &req)
+	if err != nil {
+		err := fmt.Errorf("run request error: %s", err)
+		fmt.Fprint(os.Stderr, err.Error())
+		r.Error("100", err.Error(), nil)
+		return
+	}
+
+	if req.Command == "" {
+		err := fmt.Errorf("run request error: command is required")
+		fmt.Fprintln(os.Stderr, err.Error())
+		r.Error("100", err.Error(), nil)
+		return
+	}
+
+	response, err := parseAndRun(req.Command)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run error: %s\n", err)
+		r.Error("100", err.Error(), nil)
+		return
+	}
+
+	err = r.RespondJSON(response)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run response error: %s\n", err)
+	}
+}
+
+func parseAndRun(command string) (*RunCommandResponse, error) {
+	args, err := shlex.Split(command)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing command \"%s\": %s", command, err)
+	}
+
+	if len(args) == 0 {
+		return nil, fmt.Errorf("no command provided")
+	}
+
+	// Split the command into piped commands
+	commands := []*exec.Cmd{}
+	for {
+		if !slices.Contains(args, "|") {
+			commands = append(commands, exec.Command(args[0], args[1:]...))
+			break
+		}
+
+		idx := slices.IndexFunc(args, func(arg string) bool {
+			return arg == "|"
+		})
+		if idx != -1 {
+			commands = append(commands, exec.Command(args[0], args[1:idx]...))
+			args = args[idx+1:]
+		}
+	}
+
+	response, err := pipeCommands(commands)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+// Run a series of piped commands
+func pipeCommands(commands []*exec.Cmd) (*RunCommandResponse, error) {
+	var stderrBuf bytes.Buffer
+	var stdoutBuf bytes.Buffer
+
+	readers := []*os.File{}
+	writers := []*os.File{}
+
+	for i, cmd := range commands {
+		if i > 0 {
+			// redirect stdin from the previous command's stdout
+			cmd.Stdin = readers[i-1]
+		}
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			return nil, fmt.Errorf("error creating pipe: %s", err)
+		}
+		readers = append(readers, r)
+		writers = append(writers, w)
+
+		// always redirect stderr to the buffer
+		cmd.Stderr = &stderrBuf
+
+		// if the last command, redirect stdout to the buffer, otherwise redirect to the next command
+		if i == len(commands)-1 {
+			cmd.Stdout = &stdoutBuf
+		} else {
+			cmd.Stdout = w
+		}
+
+		err = cmd.Start()
+		if err != nil {
+			return nil, fmt.Errorf("error starting command \"%s\": %s", strings.Join(cmd.Args, " "), err)
+		}
+	}
+
+	for i, cmd := range commands {
+		if i > 0 {
+			err := readers[i-1].Close()
+			if err != nil {
+				return nil, fmt.Errorf("error closing reader: %s", err)
+			}
+			err = writers[i-1].Close()
+			if err != nil {
+				return nil, fmt.Errorf("error closing writer: %s", err)
+			}
+		}
+		err := cmd.Wait()
+		if err != nil {
+			return nil, fmt.Errorf("error waiting for command \"%s\": %s", strings.Join(cmd.Args, " "), err)
+		}
+	}
+
+	return &RunCommandResponse{
+		Stdout: stdoutBuf.String(),
+		Stderr: stderrBuf.String(),
+		Code:   commands[len(commands)-1].ProcessState.ExitCode(),
+	}, nil
 }
