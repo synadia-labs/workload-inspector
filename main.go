@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	Name   = "PhilInspector"
-	Prefix = "PDP"
+	Name          = "PhilInspector"
+	DefaultPrefix = "PDP"
+	PrefixEnvVar  = "INSPECTOR_SERVICE_PREFIX"
 )
 
 const credsTempl = `-----BEGIN NATS USER JWT-----
@@ -111,10 +112,15 @@ func main() {
 	}
 	defer svc.Stop()
 
+	svcPrefix := os.Getenv(PrefixEnvVar)
+	if svcPrefix == "" {
+		svcPrefix = DefaultPrefix
+	}
+
 	err = svc.AddEndpoint(
 		"PING",
 		microLogHandler(ping),
-		micro.WithEndpointSubject(fmt.Sprintf("%s.PING", Prefix)),
+		micro.WithEndpointSubject(fmt.Sprintf("%s.PING", svcPrefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": "",
 		}),
@@ -126,7 +132,7 @@ func main() {
 	err = svc.AddEndpoint(
 		"ENV",
 		microLogHandler(getEnvironment),
-		micro.WithEndpointSubject(fmt.Sprintf("%s.ENV", Prefix)),
+		micro.WithEndpointSubject(fmt.Sprintf("%s.ENV", svcPrefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": "",
 		}),
@@ -138,7 +144,7 @@ func main() {
 	err = svc.AddEndpoint(
 		"RUN",
 		microLogHandler(runCommand),
-		micro.WithEndpointSubject(fmt.Sprintf("%s.RUN", Prefix)),
+		micro.WithEndpointSubject(fmt.Sprintf("%s.RUN", svcPrefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": RunCommandRequestMetadata,
 		}),
