@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	Name   = "WorkloadInspector"
-	Prefix = "INSP"
+	Name   = "PhilInspector"
+	Prefix = "PDP"
 )
 
 const credsTempl = `-----BEGIN NATS USER JWT-----
@@ -140,7 +140,7 @@ func main() {
 		microLogHandler(runCommand),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.RUN", Prefix)),
 		micro.WithEndpointMetadata(map[string]string{
-			"request": `{"command": "string"}`,
+			"request": RunCommandRequestMetadata,
 		}),
 	)
 
@@ -182,7 +182,10 @@ func getEnvironment(r micro.Request) {
 
 type RunCommandRequest struct {
 	Command string `json:"command"`
+	Stdin   string `json:"stdin"`
 }
+
+const RunCommandRequestMetadata = `{"command": "string", "stdin": "string"}`
 
 type RunCommandResponse struct {
 	Stdout string `json:"stdout"`
@@ -208,7 +211,7 @@ func runCommand(r micro.Request) {
 		return
 	}
 
-	response, err := parseAndRun(req.Command)
+	response, err := parseAndRun(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "run error: %s\n", err)
 		var data []byte
@@ -225,10 +228,10 @@ func runCommand(r micro.Request) {
 	}
 }
 
-func parseAndRun(command string) (*RunCommandResponse, error) {
-	args, err := shlex.Split(command)
+func parseAndRun(run RunCommandRequest) (*RunCommandResponse, error) {
+	args, err := shlex.Split(run.Command)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing command \"%s\": %s", command, err)
+		return nil, fmt.Errorf("error parsing command \"%s\": %s", run.Command, err)
 	}
 
 	if len(args) == 0 {
@@ -252,11 +255,11 @@ func parseAndRun(command string) (*RunCommandResponse, error) {
 		}
 	}
 
-	return pipeCommands(commands)
+	return pipeCommands(commands, run.Stdin)
 }
 
 // Run a series of piped commands
-func pipeCommands(commands []*exec.Cmd) (*RunCommandResponse, error) {
+func pipeCommands(commands []*exec.Cmd, stdin string) (*RunCommandResponse, error) {
 	var stderrBuf bytes.Buffer
 	var stdoutBuf bytes.Buffer
 
@@ -267,6 +270,8 @@ func pipeCommands(commands []*exec.Cmd) (*RunCommandResponse, error) {
 		if i > 0 {
 			// redirect stdin from the previous command's stdout
 			cmd.Stdin = readers[i-1]
+		} else if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
 		}
 
 		r, w, err := os.Pipe()

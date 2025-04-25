@@ -1,3 +1,6 @@
 .env
 .envrc
 target
+
+# Ignore the binary named for the last component of the go.mod module
+/workloads-demo

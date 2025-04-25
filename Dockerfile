@@ -9,7 +9,7 @@ COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /inspector
 
 FROM alpine:latest AS run
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl bash aws-cli jq
 COPY --from=build /inspector /inspector
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown appuser:appgroup /inspector
