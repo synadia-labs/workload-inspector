@@ -8,7 +8,7 @@ build:
 	go build -o ./target/inspector \
 
 docker:
-	docker buildx build --platform linux/amd64 \
+	docker buildx build --platform linux/amd64,linux/arm64 \
 		--tag workload-inspector:latest \
 		--tag ghcr.io/synadia-labs/workload-inspector:latest \
 		--label "org.opencontainers.image.source=https://github.com/synadia-labs/workload-inspector" \

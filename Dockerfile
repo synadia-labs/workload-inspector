@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
-COPY *.go ./
+COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /inspector
 
 FROM alpine:latest AS run

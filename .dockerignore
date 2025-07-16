@@ -3,4 +3,6 @@
 target
 .env
 .envrc
+docker-compose.yml
+Dockerfile
 Makefile

@@ -3,5 +3,8 @@ services:
     image: workload-inspector:latest
     environment:
       - container=true
+      - INSPECTOR_HTTP_PORT=8000
     env_file:
       - .env
+    ports:
+      - 8000:8000
