@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"time"
 
 	"github.com/google/uuid"
@@ -125,11 +127,11 @@ func logMiddleware(next http.Handler) http.Handler {
 		log.Printf("[%s] %s %s", r.Method, r.URL.Path, requestId)
 
 		start := time.Now()
-		rr := httptest.NewRecorder()
+		rr := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(rr, r)
 		duration := time.Since(start)
 
-		status := rr.Result().StatusCode
+		status := rr.Status()
 		log.Printf("[%s] %s %s %d %s", r.Method, r.URL.Path, requestId, status, duration)
 	})
 }
@@ -161,4 +163,35 @@ func createToken() (string, error) {
 	}
 
 	return string(token), nil
+}
+
+// Helper to capture HTTP response status codes
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rec *statusRecorder) WriteHeader(code int) {
+	// prevent superflous header writes
+	if rec.statusCode != 0 {
+		return
+	}
+	rec.statusCode = code
+	rec.ResponseWriter.WriteHeader(code)
+}
+
+func (rec *statusRecorder) Status() int {
+	return rec.statusCode
+}
+
+func (rec *statusRecorder) Unwrap() http.ResponseWriter {
+	return rec.ResponseWriter
+}
+
+func (rw *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("the ResponseWriter doesn't support the Hijacker interface")
+	}
+	return hijacker.Hijack()
 }
