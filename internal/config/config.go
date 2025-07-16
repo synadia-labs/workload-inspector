@@ -11,11 +11,11 @@ import (
 )
 
 const (
-	NexWorkloadNatsUrlEnvVar    = "NEX_WORKLOAD_NATS_URL"
-	NexWorkloadNatsNkeyEnvVar   = "NEX_WORKLOAD_NATS_NKEY"
-	NexWorkloadNatsB64JwtEnvVar = "NEX_WORKLOAD_NATS_B64_JWT"
-	InspectorHttpPortEnvVar     = "INSPECTOR_HTTP_PORT"
-	InspectorHttpAuthEnvVar     = "INSPECTOR_HTTP_AUTH"
+	NexWorkloadNatsServersEnvVar = "NEX_WORKLOAD_NATS_SERVERS"
+	NexWorkloadNatsNkeyEnvVar    = "NEX_WORKLOAD_NATS_NKEY"
+	NexWorkloadNatsB64JwtEnvVar  = "NEX_WORKLOAD_NATS_B64_JWT"
+	InspectorHttpPortEnvVar      = "INSPECTOR_HTTP_PORT"
+	InspectorHttpAuthEnvVar      = "INSPECTOR_HTTP_AUTH"
 )
 
 const credsTempl = `-----BEGIN NATS USER JWT-----
@@ -33,9 +33,9 @@ NKEYs are sensitive and should be treated as secrets.
 *************************************************************`
 
 type WorkloadsConfig struct {
-	NatsUrl  string
-	NatsNkey string
-	NatsJwt  string
+	NatsServers string
+	NatsNkey    string
+	NatsJwt     string
 }
 
 type HttpConfig struct {
@@ -50,9 +50,9 @@ type Config struct {
 
 func LoadConfig() (*Config, error) {
 	// Workloads config
-	natsUrl := os.Getenv(NexWorkloadNatsUrlEnvVar)
-	if natsUrl == "" {
-		return nil, fmt.Errorf("missing %s", NexWorkloadNatsUrlEnvVar)
+	natsServers := os.Getenv(NexWorkloadNatsServersEnvVar)
+	if natsServers == "" {
+		return nil, fmt.Errorf("missing %s", NexWorkloadNatsServersEnvVar)
 	}
 
 	natsNkey := strings.TrimSpace(os.Getenv(NexWorkloadNatsNkeyEnvVar))
@@ -77,9 +77,9 @@ func LoadConfig() (*Config, error) {
 
 	return &Config{
 		Workloads: WorkloadsConfig{
-			NatsUrl:  natsUrl,
-			NatsNkey: natsNkey,
-			NatsJwt:  natsJwt,
+			NatsServers: natsServers,
+			NatsNkey:    natsNkey,
+			NatsJwt:     natsJwt,
 		},
 		Http: &HttpConfig{
 			Port:    httpPort,

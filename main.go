@@ -29,7 +29,7 @@ func main() {
 	}
 
 	// connect to nats
-	nc, err := nats.Connect(cfg.Workloads.NatsUrl, nats.UserJWTAndSeed(cfg.Workloads.NatsJwt, cfg.Workloads.NatsNkey), nats.Name(name))
+	nc, err := nats.Connect(cfg.Workloads.NatsServers, nats.UserJWTAndSeed(cfg.Workloads.NatsJwt, cfg.Workloads.NatsNkey), nats.Name(name))
 	if err != nil {
 		log.Fatalf("error connecting to nats: %s", err)
 	}
