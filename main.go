@@ -77,6 +77,7 @@ func startHTTPServer(insp service.Inspector, port string) error {
 	})
 
 	mux.HandleFunc("GET /env", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		environ := insp.GetEnvironment()
 		json.NewEncoder(w).Encode(environ)
 	})
@@ -93,6 +94,7 @@ func startHTTPServer(insp service.Inspector, port string) error {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
 	})
 
