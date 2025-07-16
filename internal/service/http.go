@@ -1,13 +1,23 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nkeys"
 	"github.com/synadia-labs/workloads-demo/internal/config"
+)
+
+type RequestId string
+
+const (
+	RequestIdKey RequestId = "request_id"
 )
 
 type Middleware func(http.Handler) http.Handler
@@ -33,7 +43,8 @@ func NewHTTPServer(cfg *config.HttpConfig, insp Inspector) HTTPServer {
 		port = "8080"
 	}
 
-	middlewares := []Middleware{}
+	middlewares := []Middleware{requestIdMiddleware, logMiddleware}
+
 	if cfg.UseAuth {
 		token, err := createToken()
 		if err != nil {
@@ -50,10 +61,12 @@ func NewHTTPServer(cfg *config.HttpConfig, insp Inspector) HTTPServer {
 
 	middleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			for _, middleware := range middlewares {
-				next = middleware(next)
+			// Apply middlewares in reverse order so they execute in the correct sequence
+			handler := next
+			for i := len(middlewares) - 1; i >= 0; i-- {
+				handler = middlewares[i](handler)
 			}
-			next.ServeHTTP(w, r)
+			handler.ServeHTTP(w, r)
 		})
 	}
 
@@ -92,6 +105,36 @@ func NewHTTPServer(cfg *config.HttpConfig, insp Inspector) HTTPServer {
 	return &httpServer{server: mux, port: port}
 }
 
+// Unique ID for each request
+func requestIdMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := uuid.New().String()
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, RequestIdKey, id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// Log requests
+func logMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestId := r.Context().Value(RequestIdKey)
+		if requestId == nil {
+			requestId = ""
+		}
+		log.Printf("[%s] %s %s", r.Method, r.URL.Path, requestId)
+
+		start := time.Now()
+		rr := httptest.NewRecorder()
+		next.ServeHTTP(rr, r)
+		duration := time.Since(start)
+
+		status := rr.Result().StatusCode
+		log.Printf("[%s] %s %s %d %s", r.Method, r.URL.Path, requestId, status, duration)
+	})
+}
+
+// Authorize requests with a Bearer token
 func authMiddleware(token string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
