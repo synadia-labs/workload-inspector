@@ -10,6 +10,14 @@ import (
 	"text/template"
 )
 
+const (
+	NexWorkloadNatsUrlEnvVar    = "NEX_WORKLOAD_NATS_URL"
+	NexWorkloadNatsNkeyEnvVar   = "NEX_WORKLOAD_NATS_NKEY"
+	NexWorkloadNatsB64JwtEnvVar = "NEX_WORKLOAD_NATS_B64_JWT"
+	InspectorHttpPortEnvVar     = "INSPECTOR_HTTP_PORT"
+	InspectorHttpAuthEnvVar     = "INSPECTOR_HTTP_AUTH"
+)
+
 const credsTempl = `-----BEGIN NATS USER JWT-----
 {{.Jwt}}
 ------END NATS USER JWT------
@@ -30,36 +38,42 @@ type WorkloadsConfig struct {
 	NatsJwt  string
 }
 
+type HttpConfig struct {
+	Port    string
+	UseAuth bool
+}
+
 type Config struct {
 	Workloads WorkloadsConfig
-	HttpPort  string
+	Http      *HttpConfig
 }
 
 func LoadConfig() (*Config, error) {
 	// Workloads config
-	natsUrl := os.Getenv("NEX_WORKLOAD_NATS_URL")
+	natsUrl := os.Getenv(NexWorkloadNatsUrlEnvVar)
 	if natsUrl == "" {
-		return nil, fmt.Errorf("missing NEX_WORKLOAD_NATS_URL")
+		return nil, fmt.Errorf("missing %s", NexWorkloadNatsUrlEnvVar)
 	}
 
-	natsNkey := strings.TrimSpace(os.Getenv("NEX_WORKLOAD_NATS_NKEY"))
+	natsNkey := strings.TrimSpace(os.Getenv(NexWorkloadNatsNkeyEnvVar))
 	if natsNkey == "" {
-		return nil, fmt.Errorf("missing NEX_WORKLOAD_NATS_NKEY")
+		return nil, fmt.Errorf("missing %s", NexWorkloadNatsNkeyEnvVar)
 	}
 
-	natsJwtB64 := os.Getenv("NEX_WORKLOAD_NATS_B64_JWT")
+	natsJwtB64 := os.Getenv(NexWorkloadNatsB64JwtEnvVar)
 	if natsJwtB64 == "" {
-		return nil, fmt.Errorf("missing NEX_WORKLOAD_NATS_B64_JWT")
+		return nil, fmt.Errorf("missing %s", NexWorkloadNatsB64JwtEnvVar)
 	}
 
 	natsJwtBytes, err := base64.StdEncoding.DecodeString(natsJwtB64)
 	if err != nil {
-		return nil, fmt.Errorf("NEX_WORKLOAD_NATS_B64_JWT is invalid base64: %s", err)
+		return nil, fmt.Errorf("%s is invalid base64: %s", NexWorkloadNatsB64JwtEnvVar, err)
 	}
 	natsJwt := strings.TrimSpace(string(natsJwtBytes))
 
 	// Inspector config
-	httpPort := os.Getenv("INSPECTOR_HTTP_PORT")
+	httpPort := os.Getenv(InspectorHttpPortEnvVar)
+	httpAuth := os.Getenv(InspectorHttpAuthEnvVar)
 
 	return &Config{
 		Workloads: WorkloadsConfig{
@@ -67,7 +81,10 @@ func LoadConfig() (*Config, error) {
 			NatsNkey: natsNkey,
 			NatsJwt:  natsJwt,
 		},
-		HttpPort: httpPort,
+		Http: &HttpConfig{
+			Port:    httpPort,
+			UseAuth: httpAuth == "true",
+		},
 	}, nil
 }
 

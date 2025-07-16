@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
+	"github.com/nats-io/nkeys"
 	"github.com/synadia-labs/workloads-demo/internal/config"
 	"github.com/synadia-labs/workloads-demo/internal/service"
 )
@@ -20,6 +21,8 @@ const (
 	Name   = "WorkloadInspector"
 	Prefix = "INSP"
 )
+
+type Middleware func(http.Handler) http.Handler
 
 func main() {
 	cfg, err := config.LoadConfig()
@@ -52,9 +55,27 @@ func main() {
 	}
 
 	// start HTTP server
-	if cfg.HttpPort != "" {
+	if cfg.Http != nil {
+		port := cfg.Http.Port
+		if port == "" {
+			port = "8080"
+		}
+
+		middlewares := []Middleware{}
+		if cfg.Http.UseAuth {
+			token, err := createToken()
+			if err != nil {
+				log.Fatalf("error creating token: %s", err)
+			}
+			log.Println("--------------------------------")
+			log.Printf("http server api token: %s", token)
+			log.Printf("to use the token include, 'Authorization: Bearer %s' in the request header", token)
+			log.Println("--------------------------------")
+			middlewares = append(middlewares, authMiddleware(token))
+		}
+
 		go func() {
-			err = startHTTPServer(insp, cfg.HttpPort)
+			err = startHTTPServer(insp, port, middlewares...)
 			if err != nil {
 				log.Fatalf("error starting HTTP server: %s", err)
 			}
@@ -70,19 +91,34 @@ func main() {
 }
 
 // start HTTP server
-func startHTTPServer(insp service.Inspector, port string) error {
+func startHTTPServer(insp service.Inspector, port string, middlewares ...Middleware) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
+
+	middleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, middleware := range middlewares {
+				next = middleware(next)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	// ping
+	var ping http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(insp.Ping()))
 	})
+	mux.Handle("GET /ping", middleware(ping))
 
-	mux.HandleFunc("GET /env", func(w http.ResponseWriter, r *http.Request) {
+	// env
+	var env http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		environ := insp.GetEnvironment()
 		json.NewEncoder(w).Encode(environ)
 	})
+	mux.Handle("GET /env", middleware(env))
 
-	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
+	// run
+	var run http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req RunCommandRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
@@ -97,10 +133,39 @@ func startHTTPServer(insp service.Inspector, port string) error {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
 	})
+	mux.Handle("POST /run", middleware(run))
 
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("http server started on %s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+// Generate a random API token.
+func createToken() (string, error) {
+	nkey, err := nkeys.CreatePair(nkeys.PrefixByteUser)
+	if err != nil {
+		return "", fmt.Errorf("error creating nkey pair: %s", err)
+	}
+
+	token, err := nkey.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("error getting public key: %s", err)
+	}
+
+	return string(token), nil
+}
+
+func authMiddleware(token string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			bearer := r.Header.Get("Authorization")
+			if bearer != "Bearer "+token {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // start micro service
