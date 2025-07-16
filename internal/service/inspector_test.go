@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"fmt"
@@ -11,28 +11,28 @@ func TestDoRun(t *testing.T) {
 	tests := []struct {
 		name string
 		args string
-		want *RunCommandResponse
+		want *RunResult
 		err  error
 	}{
 		// good
 		{
 			name: "simple",
 			args: "echo hello",
-			want: &RunCommandResponse{
+			want: &RunResult{
 				Stdout: "hello\n",
 			},
 		},
 		{
 			name: "pipe",
 			args: "echo hello | wc -l",
-			want: &RunCommandResponse{
+			want: &RunResult{
 				Stdout: "       1\n",
 			},
 		},
 		{
 			name: "pipe twice",
 			args: "echo hello | wc -l | xargs",
-			want: &RunCommandResponse{
+			want: &RunResult{
 				Stdout: "1\n",
 			},
 		},
@@ -52,7 +52,8 @@ func TestDoRun(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := parseAndRun(test.args)
+			insp := NewInspector()
+			got, err := insp.RunCommand(test.args)
 			require.Equal(t, test.err, err)
 			if test.want != nil {
 				require.NotNil(t, got)
