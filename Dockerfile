@@ -10,8 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /inspector
 
 FROM alpine:latest AS run
 RUN apk add --no-cache ca-certificates
-COPY --from=build /inspector /inspector
+COPY --from=build --chown=appuser:appgroup /inspector /inspector
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-RUN chown appuser:appgroup /inspector
 USER appuser
 ENTRYPOINT ["/inspector"]
