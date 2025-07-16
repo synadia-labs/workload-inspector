@@ -1,24 +1,19 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"slices"
-	"strings"
 	"syscall"
-	"text/template"
 
-	"github.com/google/shlex"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
+	"github.com/synadia-labs/workloads-demo/internal/config"
+	"github.com/synadia-labs/workloads-demo/internal/service"
 )
 
 const (
@@ -26,81 +21,88 @@ const (
 	Prefix = "INSP"
 )
 
-const credsTempl = `-----BEGIN NATS USER JWT-----
-{{.Jwt}}
-------END NATS USER JWT------
-
-************************* IMPORTANT *************************
-NKEY Seed printed below can be used to sign and prove identity.
-NKEYs are sensitive and should be treated as secrets.
-
------BEGIN USER NKEY SEED-----
-{{.Nkey}}
-------END USER NKEY SEED------
-
-*************************************************************`
-
 func main() {
-	// pre-flight checks
-	natsUrl := os.Getenv("NEX_WORKLOAD_NATS_URL")
-	if natsUrl == "" {
-		log.Fatalf("missing NEX_WORKLOAD_NATS_URL")
-	}
-
-	natsNkey := strings.TrimSpace(os.Getenv("NEX_WORKLOAD_NATS_NKEY"))
-	if natsNkey == "" {
-		log.Fatalf("missing NEX_WORKLOAD_NATS_NKEY")
-	}
-
-	natsJwtB64 := os.Getenv("NEX_WORKLOAD_NATS_B64_JWT")
-	if natsJwtB64 == "" {
-		log.Fatalf("missing NEX_WORKLOAD_NATS_B64_JWT")
-	}
-
-	natsJwtBytes, err := base64.StdEncoding.DecodeString(natsJwtB64)
+	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("NEX_WORKLOAD_NATS_B64_JWT is invalid base64: %s", err)
+		log.Fatalf("error loading config: %s", err)
 	}
-	natsJwt := strings.TrimSpace(string(natsJwtBytes))
 
 	// save user creds to file if inside a container
 	if os.Getenv("container") != "" {
-		tmpl, err := template.New("creds").Parse(credsTempl)
+		err := cfg.SaveCreds()
 		if err != nil {
-			log.Fatalf("error parsing creds template: %s", err)
-		}
-
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("error getting user home directory: %s", err)
-		}
-
-		file, err := os.Create(filepath.Join(home, "creds.txt"))
-		if err != nil {
-			log.Fatalf("error creating nats creds file: %s", err)
-		}
-
-		{
-			defer file.Close()
-			err = tmpl.Execute(file, map[string]string{
-				"Jwt":  natsJwt,
-				"Nkey": natsNkey,
-			})
-			if err != nil {
-				log.Fatalf("error writing nats creds file: %s", err)
-			}
-			log.Printf("nats creds file written to %s\n", file.Name())
+			log.Fatalf("error saving nats creds: %s", err)
 		}
 	}
 
 	// connect to nats
-	nc, err := nats.Connect(natsUrl, nats.UserJWTAndSeed(natsJwt, natsNkey), nats.Name(Name))
+	nc, err := nats.Connect(cfg.Workloads.NatsUrl, nats.UserJWTAndSeed(cfg.Workloads.NatsJwt, cfg.Workloads.NatsNkey), nats.Name(Name))
 	if err != nil {
 		log.Fatalf("error connecting to nats: %s", err)
 	}
 	defer nc.Close()
 
-	// start service
+	// create service
+	insp := service.NewInspector()
+
+	// start micro service
+	err = startMicroService(nc, insp)
+	if err != nil {
+		log.Fatalf("error starting micro service: %s", err)
+	}
+
+	// start HTTP server
+	if cfg.HttpPort != "" {
+		go func() {
+			err = startHTTPServer(insp, cfg.HttpPort)
+			if err != nil {
+				log.Fatalf("error starting HTTP server: %s", err)
+			}
+		}()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	log.Printf("%s started\n", Name)
+	<-ctx.Done()
+	log.Printf("%s stopped", Name)
+}
+
+// start HTTP server
+func startHTTPServer(insp service.Inspector, port string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(insp.Ping()))
+	})
+
+	mux.HandleFunc("GET /env", func(w http.ResponseWriter, r *http.Request) {
+		environ := insp.GetEnvironment()
+		json.NewEncoder(w).Encode(environ)
+	})
+
+	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
+		var req RunCommandRequest
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, fmt.Errorf(`expected request format is {"command": "string"}`).Error(), http.StatusBadRequest)
+			return
+		}
+		response, err := insp.RunCommand(req.Command)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(response)
+	})
+
+	addr := fmt.Sprintf(":%s", port)
+	log.Printf("http server started on %s", addr)
+	return http.ListenAndServe(addr, mux)
+}
+
+// start micro service
+func startMicroService(nc *nats.Conn, insp service.Inspector) error {
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        Name,
 		Description: "NATS micro service to inspect a NEX workload environment.",
@@ -113,67 +115,60 @@ func main() {
 
 	err = svc.AddEndpoint(
 		"PING",
-		microLogHandler(ping),
+		microLogHandler(insp, ping),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.PING", Prefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": "",
 		}),
 	)
 	if err != nil {
-		log.Fatalf("error adding PING endpoint: %s", err)
+		return fmt.Errorf("error adding PING endpoint: %s", err)
 	}
 
 	err = svc.AddEndpoint(
 		"ENV",
-		microLogHandler(getEnvironment),
+		microLogHandler(insp, getEnvironment),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.ENV", Prefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": "",
 		}),
 	)
 	if err != nil {
-		log.Fatalf("error adding ENV endpoint: %s", err)
+		return fmt.Errorf("error adding ENV endpoint: %s", err)
 	}
 
 	err = svc.AddEndpoint(
 		"RUN",
-		microLogHandler(runCommand),
+		microLogHandler(insp, runCommand),
 		micro.WithEndpointSubject(fmt.Sprintf("%s.RUN", Prefix)),
 		micro.WithEndpointMetadata(map[string]string{
 			"request": `{"command": "string"}`,
 		}),
 	)
+	if err != nil {
+		return fmt.Errorf("error adding RUN endpoint: %s", err)
+	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	log.Printf("%s started\n", Name)
-	<-ctx.Done()
-	log.Printf("%s stopped", Name)
+	log.Printf("nats micro service started")
+	return nil
 }
 
-func microLogHandler(fn func(r micro.Request)) micro.Handler {
+func microLogHandler(svc service.Inspector, fn func(r micro.Request, svc service.Inspector)) micro.Handler {
 	return micro.HandlerFunc(func(r micro.Request) {
 		log.Printf("%s received request\n", r.Subject())
-		fn(r)
+		fn(r, svc)
 	})
 }
 
-func ping(r micro.Request) {
+func ping(r micro.Request, svc service.Inspector) {
 	err := r.Respond([]byte("PONG"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ping response error: %s\n", err)
 	}
 }
 
-func getEnvironment(r micro.Request) {
-	environ := map[string]string{}
-	for _, env := range os.Environ() {
-		parts := strings.SplitN(env, "=", 2)
-		key := parts[0]
-		val := parts[1]
-		environ[key] = val
-	}
+func getEnvironment(r micro.Request, svc service.Inspector) {
+	environ := svc.GetEnvironment()
 	err := r.RespondJSON(environ)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "environment response error: %s\n", err)
@@ -191,7 +186,7 @@ type RunCommandResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
-func runCommand(r micro.Request) {
+func runCommand(r micro.Request, svc service.Inspector) {
 	var req RunCommandRequest
 	err := json.Unmarshal(r.Data(), &req)
 	if err != nil {
@@ -208,14 +203,10 @@ func runCommand(r micro.Request) {
 		return
 	}
 
-	response, err := parseAndRun(req.Command)
+	response, err := svc.RunCommand(req.Command)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "run error: %s\n", err)
-		var data []byte
-		if response != nil {
-			data, _ = json.Marshal(response)
-		}
-		r.Error("100", err.Error(), data)
+		r.Error("100", err.Error(), nil)
 		return
 	}
 
@@ -223,116 +214,4 @@ func runCommand(r micro.Request) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "run response error: %s\n", err)
 	}
-}
-
-func parseAndRun(command string) (*RunCommandResponse, error) {
-	args, err := shlex.Split(command)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing command \"%s\": %s", command, err)
-	}
-
-	if len(args) == 0 {
-		return nil, fmt.Errorf("no command provided")
-	}
-
-	// Split the command into piped commands
-	commands := []*exec.Cmd{}
-	for {
-		if !slices.Contains(args, "|") {
-			commands = append(commands, exec.Command(args[0], args[1:]...))
-			break
-		}
-
-		idx := slices.IndexFunc(args, func(arg string) bool {
-			return arg == "|"
-		})
-		if idx != -1 {
-			commands = append(commands, exec.Command(args[0], args[1:idx]...))
-			args = args[idx+1:]
-		}
-	}
-
-	return pipeCommands(commands)
-}
-
-// Run a series of piped commands
-func pipeCommands(commands []*exec.Cmd) (*RunCommandResponse, error) {
-	var stderrBuf bytes.Buffer
-	var stdoutBuf bytes.Buffer
-
-	readers := []*os.File{}
-	writers := []*os.File{}
-
-	for i, cmd := range commands {
-		if i > 0 {
-			// redirect stdin from the previous command's stdout
-			cmd.Stdin = readers[i-1]
-		}
-
-		r, w, err := os.Pipe()
-		if err != nil {
-			return nil, fmt.Errorf("error creating pipe: %s", err)
-		}
-		readers = append(readers, r)
-		writers = append(writers, w)
-
-		// always redirect stderr to the buffer
-		cmd.Stderr = &stderrBuf
-
-		// if the last command, redirect stdout to the buffer, otherwise redirect to the next command
-		if i == len(commands)-1 {
-			cmd.Stdout = &stdoutBuf
-		} else {
-			cmd.Stdout = w
-		}
-
-		err = cmd.Start()
-		if err != nil {
-			return nil, fmt.Errorf("error starting command \"%s\": %s", strings.Join(cmd.Args, " "), err)
-		}
-	}
-
-	for i, cmd := range commands {
-		if i > 0 {
-			err := readers[i-1].Close()
-			if err != nil {
-				stderr := stderrBuf.String()
-				fmt.Fprintf(os.Stderr, "%s\n", stderr)
-				return &RunCommandResponse{
-					Stdout: stdoutBuf.String(),
-					Stderr: stderr,
-					Code:   cmd.ProcessState.ExitCode(),
-					Error:  err.Error(),
-				}, fmt.Errorf("error closing reader: %s", err)
-			}
-			err = writers[i-1].Close()
-			if err != nil {
-				stderr := stderrBuf.String()
-				fmt.Fprintf(os.Stderr, "%s\n", stderr)
-				return &RunCommandResponse{
-					Stdout: stdoutBuf.String(),
-					Stderr: stderr,
-					Code:   cmd.ProcessState.ExitCode(),
-					Error:  err.Error(),
-				}, fmt.Errorf("error closing writer: %s", err)
-			}
-		}
-		err := cmd.Wait()
-		if err != nil {
-			stderr := stderrBuf.String()
-			fmt.Fprintf(os.Stderr, "%s\n", stderr)
-			return &RunCommandResponse{
-				Stdout: stdoutBuf.String(),
-				Stderr: stderr,
-				Code:   cmd.ProcessState.ExitCode(),
-				Error:  err.Error(),
-			}, fmt.Errorf("error running command \"%s\": %s", strings.Join(cmd.Args, " "), err)
-		}
-	}
-
-	return &RunCommandResponse{
-		Stdout: stdoutBuf.String(),
-		Stderr: stderrBuf.String(),
-		Code:   commands[len(commands)-1].ProcessState.ExitCode(),
-	}, nil
 }
