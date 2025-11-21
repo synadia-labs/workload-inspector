@@ -15,13 +15,13 @@ import (
 const name = service.Name
 
 func main() {
+	// dump env vars
+	for _, env := range os.Environ() {
+		log.Printf("%s=%s", env, os.Getenv(env))
+	}
+
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		// dump env vars
-		for _, env := range os.Environ() {
-			log.Printf("%s=%s", env, os.Getenv(env))
-		}
-
 		log.Fatalf("error loading config: %s", err)
 	}
 
