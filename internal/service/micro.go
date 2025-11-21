@@ -15,7 +15,7 @@ const (
 	Prefix = "INSP"
 )
 
-func StartNATSMicro(nc *nats.Conn, insp Inspector) error {
+func StartNATSMicro(nc *nats.Conn, insp Inspector) (micro.Service, error) {
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        Name,
 		Description: "NATS micro service to inspect a NEX workload environment.",
@@ -24,7 +24,6 @@ func StartNATSMicro(nc *nats.Conn, insp Inspector) error {
 	if err != nil {
 		log.Fatalf("error creating nats micro service: %s", err)
 	}
-	defer svc.Stop()
 
 	err = svc.AddEndpoint(
 		"PING",
@@ -35,7 +34,7 @@ func StartNATSMicro(nc *nats.Conn, insp Inspector) error {
 		}),
 	)
 	if err != nil {
-		return fmt.Errorf("error adding PING endpoint: %s", err)
+		return nil, fmt.Errorf("error adding PING endpoint: %s", err)
 	}
 
 	err = svc.AddEndpoint(
@@ -47,7 +46,7 @@ func StartNATSMicro(nc *nats.Conn, insp Inspector) error {
 		}),
 	)
 	if err != nil {
-		return fmt.Errorf("error adding ENV endpoint: %s", err)
+		return nil, fmt.Errorf("error adding ENV endpoint: %s", err)
 	}
 
 	err = svc.AddEndpoint(
@@ -59,11 +58,11 @@ func StartNATSMicro(nc *nats.Conn, insp Inspector) error {
 		}),
 	)
 	if err != nil {
-		return fmt.Errorf("error adding RUN endpoint: %s", err)
+		return nil, fmt.Errorf("error adding RUN endpoint: %s", err)
 	}
 
 	log.Printf("nats micro service started")
-	return nil
+	return svc, err
 }
 
 func microLogHandler(svc Inspector, fn func(r micro.Request, svc Inspector)) micro.Handler {

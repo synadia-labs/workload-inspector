@@ -44,10 +44,11 @@ func main() {
 	insp := service.NewInspector()
 
 	// start micro service
-	err = service.StartNATSMicro(nc, insp)
+	svc, err := service.StartNATSMicro(nc, insp)
 	if err != nil {
 		log.Fatalf("error starting micro service: %s", err)
 	}
+	defer svc.Stop()
 
 	// start HTTP server
 	if cfg.Http != nil {
