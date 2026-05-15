@@ -88,7 +88,7 @@ func NewHTTPServer(cfg *config.HttpConfig, insp Inspector) HTTPServer {
 
 	// run
 	var run http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req RunCommandRequest
+		var req RunRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
 			http.Error(w, fmt.Errorf(`expected request format is {"command": "string"}`).Error(), http.StatusBadRequest)
